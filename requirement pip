@@ -1,0 +1,1 @@
+pip install streamlit soundfile numpy scipy matplotlib pydub fpdf
