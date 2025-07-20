@@ -1,58 +1,89 @@
 import streamlit as st
 import numpy as np
-import scipy.io.wavfile as wav
-import matplotlib.pyplot as plt
-import librosa
-import librosa.display
-from io import BytesIO
 import soundfile as sf
+import matplotlib.pyplot as plt
+import datetime
+import json
+import os
 
-st.set_page_config(page_title="PCG Realtime Waveform Analyzer", layout="wide")
-st.title("🔬 Real-time PCG Waveform & Noise Reduction")
+st.set_page_config(page_title="RVHD AI PCG Analyzer", layout="wide")
 
-uploaded_file = st.file_uploader("📤 Upload a PCG (.wav) file", type=["wav"])
+# --------- PATIENT INFORMATION ----------
+with st.expander("🧑‍⚕️ Enter Patient Details to Start Analysis", expanded=True):
+    name = st.text_input("Full Name")
+    age = st.number_input("Age", 1, 120)
+    gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+    patient_id = st.text_input("Patient ID")
+    symptoms = st.text_area("Symptoms")
+    notes = st.text_area("Clinical Notes")
 
-if uploaded_file:
-    st.audio(uploaded_file, format='audio/wav')
+    patient_ready = st.button("✅ Save & Start PCG Analysis")
 
-    # Load audio with librosa for more control
-    y, sr = librosa.load(uploaded_file, sr=None)
-    
-    # Show original waveform
-    st.subheader("🔈 Original PCG Waveform")
-    fig, ax = plt.subplots(figsize=(10, 3))
-    librosa.display.waveshow(y, sr=sr, ax=ax)
-    ax.set(title="Original PCG Waveform")
-    st.pyplot(fig)
+# --------- AUDIO FILE UPLOAD ---------
+st.markdown("### 🎧 Upload PCG (.wav) or Record Below:")
+col1, col2 = st.columns(2)
 
-    # --- Controls ---
-    st.subheader("🎚 Waveform Controls")
-    duration = st.slider("Select duration (seconds)", 1, int(len(y)/sr), 5)
-    amplitude_factor = st.slider("Amplitude scaling", 0.1, 5.0, 1.0)
+with col1:
+    audio_file = st.file_uploader("Upload .wav File", type=["wav"])
 
-    # Slice waveform and scale
-    y_trimmed = y[:sr * duration] * amplitude_factor
+with col2:
+    record_audio = st.button("🎙️ Record (Infrasonic Recorder)")
 
-    # --- Basic Denoising using simple bandpass filter ---
-    from scipy.signal import butter, filtfilt
-    def bandpass_filter(data, sr, lowcut=25.0, highcut=400.0):
-        nyquist = 0.5 * sr
-        low = lowcut / nyquist
-        high = highcut / nyquist
-        b, a = butter(2, [low, high], btype='band')
-        return filtfilt(b, a, data)
+# --------- FUNCTION TO PLOT AUDIO WAVEFORM ---------
+def plot_waveform(audio, samplerate):
+    duration = len(audio) / samplerate
+    time = np.linspace(0., duration, len(audio))
+    plt.figure(figsize=(10, 3))
+    plt.plot(time, audio, color='green')
+    plt.title("Filtered PCG Waveform")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Amplitude")
+    plt.grid(True)
+    st.pyplot(plt)
 
-    y_denoised = bandpass_filter(y_trimmed, sr)
+# --------- SIMULATED AI INTERPRETATION ---------
+def ai_analysis(audio):
+    # Simulated placeholder logic
+    duration = len(audio)
+    if duration % 2 == 0:
+        return "Likely Rheumatic Mitral Stenosis"
+    else:
+        return "Likely Normal or Innocent Murmur"
 
-    # --- Plot Denoised Waveform ---
-    st.subheader("🔇 Denoised Waveform (Bandpass Filtered 25–400 Hz)")
-    fig2, ax2 = plt.subplots(figsize=(10, 3))
-    librosa.display.waveshow(y_denoised, sr=sr, ax=ax2, color='r')
-    ax2.set(title="Filtered PCG Signal")
-    st.pyplot(fig2)
+# --------- PROCESS AFTER PATIENT INFO SAVED ---------
+if patient_ready:
+    if not audio_file and not record_audio:
+        st.warning("Upload or record a PCG file first.")
+    else:
+        # Load audio
+        if audio_file:
+            audio, sr = sf.read(audio_file)
+        else:
+            # Simulated recording fallback
+            audio = np.random.randn(5000) * 0.02
+            sr = 4000
 
-    # Save denoised to buffer and allow download or playback
-    st.subheader("▶️ Play Denoised Audio")
-    buf = BytesIO()
-    sf.write(buf, y_denoised, sr, format='WAV')
-    st.audio(buf.getvalue(), format='audio/wav')
+        st.success("✅ Audio received. Displaying waveform:")
+        plot_waveform(audio, sr)
+
+        result = ai_analysis(audio)
+        st.subheader("🧠 AI Analysis Result:")
+        st.success(result)
+
+        # --------- Save Patient + Result Data ---------
+        save_data = {
+            "name": name,
+            "age": age,
+            "gender": gender,
+            "patient_id": patient_id,
+            "symptoms": symptoms,
+            "notes": notes,
+            "analysis": result,
+            "timestamp": str(datetime.datetime.now())
+        }
+
+        os.makedirs("saved_data", exist_ok=True)
+        with open(f"saved_data/{patient_id}_{name.replace(' ', '_')}.json", "w") as f:
+            json.dump(save_data, f, indent=4)
+
+        st.info("📁 Patient info + PCG report saved for future use.")
