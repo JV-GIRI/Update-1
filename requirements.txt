@@ -2,6 +2,6 @@ streamlit
 sounddevice
 numpy
 scipy
-fpdf
 oauth2client
 gspread
+fpdf
