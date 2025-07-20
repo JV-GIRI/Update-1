@@ -77,7 +77,7 @@ if st.button("🎙️ Start Recording"):
 
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         gc = gspread.authorize(credentials)
-        sheet = gc.open_by_key(st.secrets["gspread"]["sheet_id"]).sheet1
+        sheet = gc.open_by_key(st.secrets["gspread"]["https://docs.google.com/spreadsheets/d/1i8yt5bEct6WIB4R-gwjp0NsElDXUvFoDS8_GYcb5SW0/edit?usp=drivesdk"]).sheet1
 
         sheet.append_row([now, f"{duration_sec:.2f}", f"{max_amp:.4f}", diagnosis])
         st.success("✅ Report saved to Google Sheet successfully!")
