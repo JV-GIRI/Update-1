@@ -1,89 +1,106 @@
 import streamlit as st
 import numpy as np
-import soundfile as sf
 import matplotlib.pyplot as plt
-import datetime
-import json
+import librosa
+import librosa.display
+import soundfile as sf
 import os
+from io import BytesIO
+import datetime
+import uuid
 
-st.set_page_config(page_title="RVHD AI PCG Analyzer", layout="wide")
+# Storage for patient data and cases
+if 'cases' not in st.session_state:
+    st.session_state.cases = []
 
-# --------- PATIENT INFORMATION ----------
-with st.expander("🧑‍⚕️ Enter Patient Details to Start Analysis", expanded=True):
+# ------------------ Patient Information Form ------------------
+st.set_page_config(page_title="RVHD PCG Analyzer", layout="wide")
+st.title("💓 AI-Based RVHD Detection from PCG Recordings")
+
+st.sidebar.title("📋 Patient Information")
+with st.sidebar.form(key="patient_form"):
     name = st.text_input("Full Name")
-    age = st.number_input("Age", 1, 120)
-    gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-    patient_id = st.text_input("Patient ID")
-    symptoms = st.text_area("Symptoms")
-    notes = st.text_area("Clinical Notes")
+    age = st.number_input("Age", min_value=0, max_value=120, value=30)
+    gender = st.radio("Gender", ["Male", "Female", "Other"])
+    date = st.date_input("Examination Date", value=datetime.date.today())
+    submit_info = st.form_submit_button(label="Start PCG Analysis")
 
-    patient_ready = st.button("✅ Save & Start PCG Analysis")
-
-# --------- AUDIO FILE UPLOAD ---------
-st.markdown("### 🎧 Upload PCG (.wav) or Record Below:")
-col1, col2 = st.columns(2)
+# ------------------ File Upload and Recorder ------------------
+st.header("🩺 Upload or Record Heart Sound")
+col1, col2 = st.columns([1, 1])
 
 with col1:
-    audio_file = st.file_uploader("Upload .wav File", type=["wav"])
+    uploaded_file = st.file_uploader("Upload PCG WAV File", type=[".wav"])
 
 with col2:
-    record_audio = st.button("🎙️ Record (Infrasonic Recorder)")
+    st.write("📡 Infrasonic Recorder")
+    st.info("(Feature Placeholder – Add custom infrasonic recording module here)")
 
-# --------- FUNCTION TO PLOT AUDIO WAVEFORM ---------
-def plot_waveform(audio, samplerate):
-    duration = len(audio) / samplerate
-    time = np.linspace(0., duration, len(audio))
-    plt.figure(figsize=(10, 3))
-    plt.plot(time, audio, color='green')
-    plt.title("Filtered PCG Waveform")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.grid(True)
-    st.pyplot(plt)
+# ------------------ Audio Processing Functions ------------------
+def denoise_audio(y, sr):
+    cent = librosa.feature.spectral_centroid(y=y, sr=sr)
+    threshold_hz = 250
+    mask = cent.mean() > threshold_hz
+    return y * mask
 
-# --------- SIMULATED AI INTERPRETATION ---------
-def ai_analysis(audio):
-    # Simulated placeholder logic
-    duration = len(audio)
-    if duration % 2 == 0:
-        return "Likely Rheumatic Mitral Stenosis"
+def extract_features(y, sr):
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    return np.mean(mfcc, axis=1)
+
+def display_waveform(y, sr):
+    duration = librosa.get_duration(y=y, sr=sr)
+    fig, ax = plt.subplots(figsize=(10, 2))
+    librosa.display.waveshow(y, sr=sr, ax=ax)
+    ax.set_title(f"Waveform ({duration:.2f} seconds)")
+    st.pyplot(fig)
+
+# ------------------ Simple AI Analysis Logic ------------------
+def dummy_rvhd_model(feature_vector):
+    prob = np.mean(feature_vector) % 1
+    if prob > 0.6:
+        return "Mitral Stenosis"
+    elif prob > 0.4:
+        return "Aortic Regurgitation"
+    elif prob > 0.2:
+        return "Aortic Stenosis"
     else:
-        return "Likely Normal or Innocent Murmur"
+        return "Normal"
 
-# --------- PROCESS AFTER PATIENT INFO SAVED ---------
-if patient_ready:
-    if not audio_file and not record_audio:
-        st.warning("Upload or record a PCG file first.")
-    else:
-        # Load audio
-        if audio_file:
-            audio, sr = sf.read(audio_file)
-        else:
-            # Simulated recording fallback
-            audio = np.random.randn(5000) * 0.02
-            sr = 4000
+# ------------------ Save and View Case History ------------------
+def save_case(name, age, gender, date, diagnosis):
+    st.session_state.cases.append({
+        "id": str(uuid.uuid4())[:8],
+        "name": name,
+        "age": age,
+        "gender": gender,
+        "date": date,
+        "diagnosis": diagnosis
+    })
 
-        st.success("✅ Audio received. Displaying waveform:")
-        plot_waveform(audio, sr)
+# ------------------ Analysis Logic ------------------
+if submit_info and uploaded_file is not None:
+    st.subheader("📊 PCG Analysis Results")
+    y, sr = librosa.load(uploaded_file)
+    y_denoised = denoise_audio(y, sr)
+    display_waveform(y_denoised, sr)
+    features = extract_features(y_denoised, sr)
+    result = dummy_rvhd_model(features)
 
-        result = ai_analysis(audio)
-        st.subheader("🧠 AI Analysis Result:")
-        st.success(result)
+    st.success(f"🩺 AI Diagnosis: **{result}**")
+    save_case(name, age, gender, date, result)
 
-        # --------- Save Patient + Result Data ---------
-        save_data = {
-            "name": name,
-            "age": age,
-            "gender": gender,
-            "patient_id": patient_id,
-            "symptoms": symptoms,
-            "notes": notes,
-            "analysis": result,
-            "timestamp": str(datetime.datetime.now())
-        }
+elif uploaded_file is None and submit_info:
+    st.warning("Please upload a PCG file to proceed with analysis.")
 
-        os.makedirs("saved_data", exist_ok=True)
-        with open(f"saved_data/{patient_id}_{name.replace(' ', '_')}.json", "w") as f:
-            json.dump(save_data, f, indent=4)
-
-        st.info("📁 Patient info + PCG report saved for future use.")
+# ------------------ History Tab ------------------
+st.subheader("📁 Previous Patient Cases")
+if len(st.session_state.cases) == 0:
+    st.info("No cases available yet.")
+else:
+    for case in st.session_state.cases[::-1]:
+        with st.expander(f"🧾 {case['name']} ({case['date']})"):
+            st.markdown(f"**ID:** {case['id']}")
+            st.markdown(f"**Age:** {case['age']}")
+            st.markdown(f"**Gender:** {case['gender']}")
+            st.markdown(f"**Diagnosis:** {case['diagnosis']}")
+            
