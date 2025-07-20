@@ -1,78 +1,119 @@
 import streamlit as st
 import numpy as np
 import soundfile as sf
+import matplotlib.pyplot as plt
 import io
-from scipy.signal import butter, lfilter
+import os
+from scipy.signal import butter, filtfilt
+from fpdf import FPDF
 from pydub import AudioSegment
 from pydub.playback import play
 import tempfile
-import os
 
-# ---------- Bandpass Filter Function ----------
+st.set_page_config(layout="wide")
+st.title("Heart Sound Case Analyzer")
+
+# 1. Record or Upload Audio
+st.header("🎙️ Step 1: Record or Upload Heart Sound")
+audio_data = None
+
+recorded = st.file_uploader("Upload heart sound (.wav)", type=["wav"])
+if recorded:
+    audio_data, samplerate = sf.read(recorded)
+    st.success("Audio uploaded successfully!")
+
+# 2. Filter settings
+st.header("🎚️ Step 2: Apply Filters and Adjustments")
+
+lowcut = st.slider("Low Cut Frequency (Hz)", 10, 100, 20)
+highcut = st.slider("High Cut Frequency (Hz)", 150, 1000, 150)
+amp_factor = st.slider("Amplitude Multiplier", 1.0, 5.0, 1.5)
+duration = st.slider("Clip Duration (sec)", 1, 10, 5)
+
+# 3. Bandpass Filter
 def butter_bandpass(lowcut, highcut, fs, order=5):
     nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    return butter(order, [low, high], btype='band')
+    low, high = lowcut / nyq, highcut / nyq
+    b, a = butter(order, [low, high], btype="band")
+    return b, a
 
-def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
-    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
-    y = lfilter(b, a, data)
+def apply_bandpass_filter(data, lowcut, highcut, fs):
+    b, a = butter_bandpass(lowcut, highcut, fs)
+    y = filtfilt(b, a, data)
     return y
 
-# ---------- UI Starts ----------
-st.title("🩺 PCG Analyzer with Bandpass Filtering")
-st.markdown("🎧 **Supports Bluetooth or Stethoscope Mic**")
+if audio_data is not None:
+    st.subheader("📊 Waveform Visualization")
 
-# ---------- Patient Info ----------
-with st.expander("➕ Enter Patient Details"):
-    patient_name = st.text_input("Patient Name")
-    patient_id = st.text_input("Patient ID")
-    age = st.number_input("Age", 0, 120)
-    gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-    mic_type = st.selectbox("Mic Used", ["Stethoscope", "Bluetooth Mic"])
+    # Show waveform
+    fig, ax = plt.subplots()
+    t = np.linspace(0, duration, int(duration * samplerate))
+    ax.plot(t[:len(audio_data)], audio_data[:len(t)])
+    ax.set_title("Original Audio Waveform")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Amplitude")
+    st.pyplot(fig)
 
-# ---------- Upload or Record ----------
-st.subheader("📤 Upload or Record Heart Sound (.wav)")
+    # Filtered and amplified signal
+    filtered_audio = apply_bandpass_filter(audio_data, lowcut, highcut, samplerate)
+    filtered_audio *= amp_factor
 
-uploaded_file = st.file_uploader("Upload .wav file", type=["wav"])
+    # Buttons to play audio
+    st.subheader("🔊 Listen to Heart Sound")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("▶️ Play Original"):
+            temp_path = tempfile.mktemp(suffix=".wav")
+            sf.write(temp_path, audio_data, samplerate)
+            audio = AudioSegment.from_wav(temp_path)
+            play(audio)
+    with col2:
+        if st.button("▶️ Play After Noise Reduction"):
+            temp_path = tempfile.mktemp(suffix=".wav")
+            sf.write(temp_path, filtered_audio, samplerate)
+            audio = AudioSegment.from_wav(temp_path)
+            play(audio)
 
-record_button = st.button("🔴 Start Recording (Use External Tool)")
+# 4. Patient Details
+st.header("🧑‍⚕️ Step 3: Enter Patient Details")
+with st.form("patient_form"):
+    pname = st.text_input("Patient Name")
+    age = st.number_input("Age", min_value=1, max_value=120)
+    gender = st.radio("Gender", ["Male", "Female", "Other"])
+    symptoms = st.text_area("Symptoms")
+    submit = st.form_submit_button("Start Case")
 
-if record_button:
-    st.info("Use mobile app or audio recorder to record and upload .wav")
+# 5. Analysis Button and Save Case
+if submit and audio_data is not None:
+    st.success("Patient details saved.")
+    st.header("📁 Step 4: Save and Export Case")
 
-# ---------- Process File ----------
-if uploaded_file:
-    with st.spinner("Processing audio..."):
-        # Read the audio
-        audio_data, samplerate = sf.read(uploaded_file)
-        duration = len(audio_data) / samplerate
-
-        st.success(f"✅ Audio Loaded | Duration: {duration:.2f} sec | Sample Rate: {samplerate} Hz")
-
-        # Play Original
-        st.audio(uploaded_file, format='audio/wav', start_time=0, label="🔊 Original Sound")
-
-        # Filter
-        filtered = apply_bandpass_filter(audio_data, 20, 150, samplerate)
+    if st.button("🧪 Analyse & Save Case"):
+        case_data = {
+            "Name": pname,
+            "Age": age,
+            "Gender": gender,
+            "Symptoms": symptoms
+        }
 
         # Save filtered audio
-        temp_wav = io.BytesIO()
-        sf.write(temp_wav, filtered, samplerate, format='WAV')
-        temp_wav.seek(0)
+        filtered_path = f"{pname.replace(' ', '_')}_filtered.wav"
+        sf.write(filtered_path, filtered_audio, samplerate)
 
-        st.audio(temp_wav, format='audio/wav', start_time=0, label="🔊 Filtered Sound")
+        # PDF report
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="Heart Sound Report", ln=True, align="C")
+        for key, value in case_data.items():
+            pdf.cell(200, 10, txt=f"{key}: {value}", ln=True)
+        pdf.output("case_report.pdf")
 
-        # Download Option
-        st.download_button("⬇️ Download Filtered Sound", data=temp_wav, file_name="filtered_heart_sound.wav")
+        st.success("Case analyzed and saved!")
+        with open("case_report.pdf", "rb") as f:
+            st.download_button("📄 Download Report", f, file_name="Heart_Report.pdf")
 
-        # Show waveform (optional)
-        st.line_chart(filtered[:5000])  # Display 1st second only
+        with open(filtered_path, "rb") as f:
+            st.download_button("🎧 Download Filtered Audio", f, file_name="Filtered_Audio.wav")
 
-# ---------- Save Patient Case ----------
-if st.button("📁 Save Case"):
-    if not patient_name or not uploaded_file:
-        st.warning("Please enter patient details and upload audio.")
-    else:
-        st.success(f"✅ Case Saved for {patient_name} (ID: {patient_id})")
+        st.info("Case saved to local cloud (simulation).")
