@@ -1,126 +1,85 @@
 import streamlit as st
 import numpy as np
+import soundfile as sf
+import scipy.signal as signal
 import matplotlib.pyplot as plt
-import sounddevice as sd
-import scipy.io.wavfile as wav
-from scipy.signal import butter, lfilter
-from io import BytesIO
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 from fpdf import FPDF
-import datetime
+import io
 
-# -----------------------------
-# Bandpass Filter Function
-# -----------------------------
-def butter_bandpass(lowcut, highcut, fs, order=5):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    return b, a
+# Page config
+st.set_page_config(page_title="Heart AI + Case Sheets", layout="wide")
 
-def bandpass_filter(data, lowcut, highcut, fs, order=5):
-    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
-    y = lfilter(b, a, data)
-    return y
+# Google Sheets setup
+SA = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"],
+    scopes=[
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+)
+gc = gspread.authorize(SA)
+sheet = gc.open_by_url(st.secrets["private_gsheets_url"]).sheet1
 
-# -----------------------------
-# Save WAV file
-# -----------------------------
-def save_wav(filename, data, samplerate):
-    wav.write(filename, samplerate, np.int16(data * 32767))
+# AI Murmur model placeholder
+def predict_murmur(wav):
+    # Dummy logic, replace with real model inference
+    score = float(np.random.rand())
+    label = "Murmur" if score > 0.5 else "Normal"
+    return score, label
 
-# -----------------------------
-# Generate PDF Report
-# -----------------------------
-def generate_pdf(patient_name, diagnosis, filename):
+# PDF report generator
+def generate_pdf_summary(name, score, label):
+    buffer = io.BytesIO()
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Heart Sound Analysis Report", ln=True, align='C')
+    pdf.cell(200, 10, txt="Heart Murmur Analysis", ln=True, align="C")
     pdf.ln(10)
-    pdf.cell(200, 10, txt=f"Patient Name: {patient_name}", ln=True)
-    pdf.cell(200, 10, txt=f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.ln(10)
-    pdf.multi_cell(0, 10, diagnosis)
+    pdf.cell(200, 10, txt=f"Patient: {name}", ln=True)
+    pdf.cell(200, 10, txt=f"Date: {datetime.now()}", ln=True)
+    pdf.cell(200, 10, txt=f"Murmur Score: {score:.2f}", ln=True)
+    pdf.cell(200, 10, txt=f"Diagnosis: {label}", ln=True)
+    pdf.output(buffer)
+    buffer.seek(0)
+    return buffer
 
-    pdf_output = BytesIO()
-    pdf.output(pdf_output)
-    pdf_output.seek(0)
-    st.download_button("Download Report", data=pdf_output, file_name="heart_report.pdf")
+# UI: Recording / Uploading
+st.title("Heart AI Analyzer & Case History")
+name = st.text_input("Patient Name")
+uploaded = st.file_uploader("Upload heart sound (.wav)", type=["wav"])
+if uploaded:
+    data, sr = sf.read(uploaded)
+    st.audio(uploaded, format="audio/wav")
+    st.subheader("Waveform")
+    plt.figure(figsize=(10, 3))
+    plt.plot(np.linspace(0, len(data)/sr, len(data)), data)
+    plt.xlabel("Time (s)"); plt.ylabel("Amplitude")
+    st.pyplot(plt)
 
-# -----------------------------
-# Main App
-# -----------------------------
-st.set_page_config(page_title="Heartbeat Analyzer", layout="centered")
-st.title("🫀 Heartbeat Waveform Analyzer")
+    # Denoise
+    b, a = signal.butter(4, [20/(0.5*sr), 150/(0.5*sr)], btype='band')
+    filtered = signal.filtfilt(b, a, data)
+    st.audio(write_filtered := io.BytesIO(), format="audio/wav", data=sf.write(write_filtered, filtered, sr, format="WAV"))
+    st.subheader("Waveform (Filtered)")
+    plt.figure(figsize=(10,3))
+    plt.plot(np.linspace(0, len(filtered)/sr, len(filtered)), filtered, color='orange')
+    st.pyplot(plt)
 
-st.sidebar.header("🎚 Controls")
-duration = st.sidebar.slider("Recording Duration (seconds)", 1, 10, 5)
-samplerate = st.sidebar.selectbox("Sampling Rate", [22050, 44100], index=1)
-amplify = st.sidebar.slider("Amplitude Scale", 0.5, 5.0, 1.0)
-lowcut = st.sidebar.slider("Low Cut Frequency (Hz)", 10, 100, 20)
-highcut = st.sidebar.slider("High Cut Frequency (Hz)", 100, 1000, 300)
+    # AI Inference
+    score, label = predict_murmur(filtered)
+    st.subheader("🧠 AI Diagnosis")
+    st.write(f"**Murmur Score:** {score:.2f}")
+    st.write(f"**Prediction:** {label}")
 
-if "recording" not in st.session_state:
-    st.session_state.recording = None
+    # Save to Google Sheets
+    if st.button("💾 Save Case to Google Sheets"):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sheet.append_row([timestamp, name, score, label])
+        st.success("✅ Case saved to Google Sheets")
 
-# -----------------------------
-# Patient Info
-# -----------------------------
-with st.expander("📝 Enter Patient Details"):
-    patient_name = st.text_input("Patient Name")
-    age = st.text_input("Age")
-    gender = st.radio("Gender", ["Male", "Female", "Other"])
-
-# -----------------------------
-# Audio Recording
-# -----------------------------
-st.markdown("## 🎙️ Record Heart Sound")
-if st.button("Start Recording"):
-    st.info("Recording... Please remain silent.")
-    audio_data = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='float32')
-    sd.wait()
-    st.session_state.recording = audio_data[:, 0]
-    save_wav("original.wav", st.session_state.recording, samplerate)
-    st.success("Recording complete!")
-
-# -----------------------------
-# Display Waveforms & Playback
-# -----------------------------
-if st.session_state.recording is not None:
-    signal = st.session_state.recording * amplify
-    time = np.linspace(0, len(signal) / samplerate, len(signal))
-
-    st.subheader("📈 Original Waveform")
-    fig1, ax1 = plt.subplots()
-    ax1.plot(time, signal)
-    ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("Amplitude")
-    ax1.set_title("Original Heart Sound")
-    st.pyplot(fig1)
-
-    st.audio("original.wav")
-
-    st.subheader("🧹 Noise Reduced Waveform")
-    filtered_signal = bandpass_filter(signal, lowcut, highcut, samplerate)
-    save_wav("filtered.wav", filtered_signal, samplerate)
-
-    fig2, ax2 = plt.subplots()
-    ax2.plot(time, filtered_signal, color='green')
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("Amplitude")
-    ax2.set_title("Filtered Heart Sound")
-    st.pyplot(fig2)
-
-    st.audio("filtered.wav")
-
-    # Diagnosis (Basic)
-    st.subheader("📋 Diagnosis")
-    diagnosis = st.text_area("Enter analysis/notes here:")
-
-    if st.button("Analyze and Save Case"):
-        st.success("Case saved successfully.")
-        if patient_name:
-            generate_pdf(patient_name, diagnosis, "heart_report.pdf")
-        else:
-            st.warning("Please enter patient name to generate report.")
+    # PDF Download
+    pdf_bytes = generate_pdf_summary(name, score, label)
+    st.download_button("📄 Download Report PDF", data=pdf_bytes, file_name=f"{name}_report.pdf", mime="application/pdf")
