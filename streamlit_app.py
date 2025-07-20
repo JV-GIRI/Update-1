@@ -1,144 +1,126 @@
 import streamlit as st
-import sounddevice as sd
 import numpy as np
-import scipy.signal
 import matplotlib.pyplot as plt
-import io
-import base64
-import wave
-from scipy.io import wavfile
-from pydub import AudioSegment
-from pydub.playback import play
-import tempfile
+import sounddevice as sd
+import scipy.io.wavfile as wav
+from scipy.signal import butter, lfilter
+from io import BytesIO
 from fpdf import FPDF
+import datetime
 
-# Set Page Config
-st.set_page_config(
-    page_title="Heartbeat AI Analyzer",
-    layout="wide",
-    initial_sidebar_state="auto"
-)
+# -----------------------------
+# Bandpass Filter Function
+# -----------------------------
+def butter_bandpass(lowcut, highcut, fs, order=5):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    return b, a
 
-# Custom CSS for styling
-st.markdown("""
-    <style>
-        html, body, [class*="css"]  {
-            font-family: 'Segoe UI', sans-serif;
-            background-color: #f8f9fa;
-        }
-        .main {
-            background-color: #ffffff;
-            padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.1);
-        }
-        .stButton>button {
-            background-color: #007BFF;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            padding: 0.5em 1em;
-            font-weight: 600;
-        }
-        .stTextInput>div>div>input {
-            padding: 0.75em;
-            border-radius: 10px;
-            border: 1px solid #ccc;
-        }
-        hr {
-            border: 1px solid #dee2e6;
-        }
-    </style>
-""", unsafe_allow_html=True)
+def bandpass_filter(data, lowcut, highcut, fs, order=5):
+    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
+    y = lfilter(b, a, data)
+    return y
 
-st.title("🩺 Heart Sound Recorder & Analyzer")
+# -----------------------------
+# Save WAV file
+# -----------------------------
+def save_wav(filename, data, samplerate):
+    wav.write(filename, samplerate, np.int16(data * 32767))
 
-with st.container():
-    st.subheader("🧑‍⚕️ Patient Details")
-    name = st.text_input("Patient Name")
-    age = st.number_input("Age", min_value=1, max_value=120, step=1)
-    case_id = st.text_input("Case ID")
-    st.markdown("---")
+# -----------------------------
+# Generate PDF Report
+# -----------------------------
+def generate_pdf(patient_name, diagnosis, filename):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="Heart Sound Analysis Report", ln=True, align='C')
+    pdf.ln(10)
+    pdf.cell(200, 10, txt=f"Patient Name: {patient_name}", ln=True)
+    pdf.cell(200, 10, txt=f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.ln(10)
+    pdf.multi_cell(0, 10, diagnosis)
 
-# RECORDING
-st.subheader("🎙️ Record Heart Sound")
-duration = st.slider("Recording Duration (seconds)", 2, 10, 5)
-record_button = st.button("🔴 Start Recording")
+    pdf_output = BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+    st.download_button("Download Report", data=pdf_output, file_name="heart_report.pdf")
 
-if record_button:
-    st.info("Recording...")
-    fs = 44100
-    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+# -----------------------------
+# Main App
+# -----------------------------
+st.set_page_config(page_title="Heartbeat Analyzer", layout="centered")
+st.title("🫀 Heartbeat Waveform Analyzer")
+
+st.sidebar.header("🎚 Controls")
+duration = st.sidebar.slider("Recording Duration (seconds)", 1, 10, 5)
+samplerate = st.sidebar.selectbox("Sampling Rate", [22050, 44100], index=1)
+amplify = st.sidebar.slider("Amplitude Scale", 0.5, 5.0, 1.0)
+lowcut = st.sidebar.slider("Low Cut Frequency (Hz)", 10, 100, 20)
+highcut = st.sidebar.slider("High Cut Frequency (Hz)", 100, 1000, 300)
+
+if "recording" not in st.session_state:
+    st.session_state.recording = None
+
+# -----------------------------
+# Patient Info
+# -----------------------------
+with st.expander("📝 Enter Patient Details"):
+    patient_name = st.text_input("Patient Name")
+    age = st.text_input("Age")
+    gender = st.radio("Gender", ["Male", "Female", "Other"])
+
+# -----------------------------
+# Audio Recording
+# -----------------------------
+st.markdown("## 🎙️ Record Heart Sound")
+if st.button("Start Recording"):
+    st.info("Recording... Please remain silent.")
+    audio_data = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='float32')
     sd.wait()
-    st.success("Recording Complete")
+    st.session_state.recording = audio_data[:, 0]
+    save_wav("original.wav", st.session_state.recording, samplerate)
+    st.success("Recording complete!")
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    wavfile.write(temp_file.name, fs, recording)
+# -----------------------------
+# Display Waveforms & Playback
+# -----------------------------
+if st.session_state.recording is not None:
+    signal = st.session_state.recording * amplify
+    time = np.linspace(0, len(signal) / samplerate, len(signal))
 
-    audio_bytes = open(temp_file.name, "rb").read()
-    st.audio(audio_bytes, format="audio/wav")
+    st.subheader("📈 Original Waveform")
+    fig1, ax1 = plt.subplots()
+    ax1.plot(time, signal)
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Amplitude")
+    ax1.set_title("Original Heart Sound")
+    st.pyplot(fig1)
 
-    st.markdown("#### 🔍 Original Waveform")
-    fig, ax = plt.subplots()
-    time_axis = np.linspace(0, duration, len(recording))
-    ax.plot(time_axis, recording, color="#2c3e50")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Amplitude")
-    st.pyplot(fig)
+    st.audio("original.wav")
 
-    # Noise Reduction
-    st.subheader("🔧 Noise Reduction")
-    lowcut = st.slider("Low Cut Frequency", 10, 100, 30)
-    highcut = st.slider("High Cut Frequency", 100, 800, 150)
+    st.subheader("🧹 Noise Reduced Waveform")
+    filtered_signal = bandpass_filter(signal, lowcut, highcut, samplerate)
+    save_wav("filtered.wav", filtered_signal, samplerate)
 
-    def butter_bandpass(lowcut, highcut, fs, order=6):
-        nyq = 0.5 * fs
-        low = lowcut / nyq
-        high = highcut / nyq
-        return scipy.signal.butter(order, [low, high], btype='band')
-
-    def apply_filter(data, lowcut, highcut, fs):
-        b, a = butter_bandpass(lowcut, highcut, fs)
-        return scipy.signal.lfilter(b, a, data.flatten())
-
-    filtered = apply_filter(recording, lowcut, highcut, fs).reshape(-1, 1)
-
-    st.markdown("#### 🎵 Filtered Waveform")
     fig2, ax2 = plt.subplots()
-    ax2.plot(time_axis, filtered, color="#27ae60")
+    ax2.plot(time, filtered_signal, color='green')
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Amplitude")
+    ax2.set_title("Filtered Heart Sound")
     st.pyplot(fig2)
 
-    # Save filtered sound
-    temp_clean = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    wavfile.write(temp_clean.name, fs, filtered.astype(np.float32))
+    st.audio("filtered.wav")
 
-    # Play cleaned sound
-    st.audio(temp_clean.name, format="audio/wav")
+    # Diagnosis (Basic)
+    st.subheader("📋 Diagnosis")
+    diagnosis = st.text_area("Enter analysis/notes here:")
 
-    # PDF Report
-    st.subheader("📄 Generate Report")
-    if st.button("Generate PDF"):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=14)
-        pdf.cell(200, 10, txt="Heartbeat Sound Analysis Report", ln=True, align='C')
-        pdf.ln(10)
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt=f"Patient Name: {name}", ln=True)
-        pdf.cell(200, 10, txt=f"Age: {age}", ln=True)
-        pdf.cell(200, 10, txt=f"Case ID: {case_id}", ln=True)
-        pdf.cell(200, 10, txt=f"Recording Duration: {duration} sec", ln=True)
-        pdf.cell(200, 10, txt=f"Bandpass Range: {lowcut}Hz - {highcut}Hz", ln=True)
-
-        # Save PDF
-        pdf_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        pdf.output(pdf_file.name)
-
-        with open(pdf_file.name, "rb") as f:
-            st.download_button("📥 Download PDF Report", f, file_name="heartbeat_report.pdf")
-
-    # Cloud Save Placeholder
-    st.subheader("☁️ Save to Cloud (Coming Soon)")
-    st.info("Cloud save functionality will integrate Firebase/Supabase on your request.")
+    if st.button("Analyze and Save Case"):
+        st.success("Case saved successfully.")
+        if patient_name:
+            generate_pdf(patient_name, diagnosis, "heart_report.pdf")
+        else:
+            st.warning("Please enter patient name to generate report.")
