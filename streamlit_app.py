@@ -1,147 +1,109 @@
 # streamlit_app.py
-
 import streamlit as st
-import sounddevice as sd
-import numpy as np
-import scipy.io.wavfile as wav
-import io
 import os
-from datetime import datetime
-from fpdf import FPDF
-from sklearn.preprocessing import MinMaxScaler
+import uuid
+import librosa
+import numpy as np
+import datetime
+from tensorflow.keras.models import load_model
+import json
 
-# App Configuration
-st.set_page_config(page_title="Heart Sound Analyzer", layout="wide")
+# Load pre-trained model (Simulated placeholder)
+@st.cache_resource
+def load_cnn_model():
+    model = load_model("model/rvhd_cnn_model.h5")  # replace with actual model path
+    return model
 
-# Sidebar - Navigation Tabs
-st.sidebar.title("Navigation")
-tabs = ["Record", "Cases", "About"]
-page = st.sidebar.radio("Go to", tabs)
+model = load_cnn_model()
 
-# Session state to store recorded files and cases
-if 'cases' not in st.session_state:
-    st.session_state.cases = []
+# Function to analyze audio and extract features
+def extract_features(file_path):
+    y, sr = librosa.load(file_path, sr=None)
+    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
+    mel_db = librosa.power_to_db(mel_spec, ref=np.max)
+    mel_db_resized = librosa.util.fix_length(mel_db, size=216, axis=1)
+    return mel_db_resized[np.newaxis, ..., np.newaxis]  # Add batch and channel dims
 
-# Bandpass filter
-from scipy.signal import butter, lfilter
+# Simulated function to interpret model output
+def interpret_prediction(pred):
+    if pred[0][0] > 0.5:
+        return "Possible Rheumatic Valvular Heart Disease (RVHD) detected"
+    else:
+        return "Normal heart sound pattern"
 
-def butter_bandpass(lowcut, highcut, fs, order=5):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    return b, a
+# Case history persistence
+def save_case(case):
+    if not os.path.exists("case_data"):
+        os.makedirs("case_data")
+    case_id = str(uuid.uuid4())
+    with open(f"case_data/{case_id}.json", "w") as f:
+        json.dump(case, f)
 
-def bandpass_filter(data, lowcut, highcut, fs, order=5):
-    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
-    y = lfilter(b, a, data)
-    return y
+def load_all_cases():
+    if not os.path.exists("case_data"):
+        return []
+    cases = []
+    for file in os.listdir("case_data"):
+        with open(os.path.join("case_data", file), "r") as f:
+            cases.append(json.load(f))
+    return cases
 
-# AI diagnosis stub (Replace with real CNN model later)
-def ai_diagnosis(filtered_data):
-    hr = np.random.randint(60, 100)
-    diagnosis = "Normal heart sounds" if hr < 90 else "Possible murmur detected"
-    return hr, diagnosis
+# Streamlit UI Tabs
+st.set_page_config(page_title="PCG RVHD Analyzer", layout="centered")
+tabs = st.tabs(["Upload & Analyze", "Case History"])
 
-# Generate PDF report
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'Heart Sound Analysis Report', 0, 1, 'C')
+# Upload & Analyze tab
+with tabs[0]:
+    st.title("Phonocardiogram Analyzer with AI for RVHD")
+    st.write("Upload a PCG (phonocardiogram) `.wav` or `.mp3` file to analyze for rheumatic valvular heart disease.")
 
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-
-def generate_report(name, age, gender, heart_rate, diagnosis):
-    pdf = PDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-
-    pdf.cell(200, 10, txt=f"Name: {name}", ln=True)
-    pdf.cell(200, 10, txt=f"Age: {age}", ln=True)
-    pdf.cell(200, 10, txt=f"Gender: {gender}", ln=True)
-    pdf.cell(200, 10, txt=f"Heart Rate: {heart_rate} bpm", ln=True)
-    pdf.multi_cell(0, 10, txt=f"AI Analysis: {diagnosis}")
-
-    output = io.BytesIO()
-    pdf.output(output)
-    return output
-
-# Page 1 - Record Audio
-if page == "Record":
-    st.title("📼 Record Heart Sound")
-
-    with st.form("patient_form"):
+    with st.form("UploadForm"):
         name = st.text_input("Patient Name")
-        age = st.number_input("Age", min_value=0)
+        age = st.number_input("Age", min_value=1, max_value=120)
         gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-        duration = st.slider("Recording Duration (sec)", 3, 10, 5)
-        submitted = st.form_submit_button("Start Recording")
+        uploaded_file = st.file_uploader("Upload PCG file", type=["wav", "mp3"])
+        submitted = st.form_submit_button("Analyze")
 
-    if submitted:
-        fs = 4000
-        st.info("Recording in progress...")
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
-        sd.wait()
-        st.success("Recording complete")
+    if submitted and uploaded_file:
+        temp_filename = f"temp_audio_{uuid.uuid4()}.wav"
+        with open(temp_filename, "wb") as f:
+            f.write(uploaded_file.read())
 
-        # Preprocess
-        audio = recording.flatten()
-        filtered_audio = bandpass_filter(audio, 20.0, 500.0, fs)
+        st.info("Analyzing audio file...")
+        features = extract_features(temp_filename)
+        prediction = model.predict(features)
+        interpretation = interpret_prediction(prediction)
+        hr_estimate = np.random.randint(60, 100)  # Simulated HR estimate
 
-        # Diagnosis
-        heart_rate, diagnosis = ai_diagnosis(filtered_audio)
+        st.success("Analysis Complete")
+        st.markdown(f"**Heart Rate:** {hr_estimate} bpm")
+        st.markdown(f"**Interpretation:** {interpretation}")
 
-        # Save and playback
-        filename = f"record_{datetime.now().strftime('%Y%m%d%H%M%S')}.wav"
-        wav.write(filename, fs, (filtered_audio * 32767).astype(np.int16))
-        st.audio(filename, format="audio/wav")
+        os.remove(temp_filename)
 
-        # Waveform
-        st.line_chart(filtered_audio)
-
-        # Generate report
-        report = generate_report(name, age, gender, heart_rate, diagnosis)
-        st.download_button("Download Report", report, file_name="report.pdf")
-
-        # Save to session
-        st.session_state.cases.append({
+        # Save case
+        case = {
             "name": name,
             "age": age,
             "gender": gender,
-            "heart_rate": heart_rate,
-            "diagnosis": diagnosis,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+            "filename": uploaded_file.name,
+            "result": interpretation,
+            "heart_rate": hr_estimate,
+            "timestamp": str(datetime.datetime.now())
+        }
+        save_case(case)
 
-# Page 2 - Case History
-elif page == "Cases":
-    st.title("📋 Case History")
-    if st.session_state.cases:
-        for idx, case in enumerate(st.session_state.cases[::-1], 1):
-            st.subheader(f"Case {idx}")
-            st.write(f"**Name:** {case['name']}")
-            st.write(f"**Age:** {case['age']} | **Gender:** {case['gender']}")
-            st.write(f"**Heart Rate:** {case['heart_rate']} bpm")
-            st.write(f"**AI Diagnosis:** {case['diagnosis']}")
-            st.write(f"**Recorded On:** {case['time']}")
+# Case History tab
+with tabs[1]:
+    st.title("Past Analyzed Cases")
+    cases = load_all_cases()
+    if not cases:
+        st.info("No previous cases found.")
     else:
-        st.warning("No cases found yet.")
-
-# Page 3 - About
-elif page == "About":
-    st.title("ℹ️ About")
-    st.markdown("""
-    This mobile-optimized Streamlit app allows real-time heart sound recording and AI-assisted interpretation.
-
-    **Features:**
-    - Infrasonic heart sound recording (20Hz–500Hz bandpass filter)
-    - AI-generated diagnosis and PDF report
-    - Local case history tracking
-    - User-friendly mobile interface
-
-    Built using: Python, Streamlit, NumPy, SciPy, FPDF
-    """)
-        
+        for case in sorted(cases, key=lambda x: x['timestamp'], reverse=True):
+            with st.expander(f"{case['name']} | {case['age']} yrs | {case['timestamp']}"):
+                st.write(f"**Gender:** {case['gender']}")
+                st.write(f"**File:** {case['filename']}")
+                st.write(f"**Heart Rate:** {case['heart_rate']} bpm")
+                st.write(f"**Interpretation:** {case['result']}")
+                
