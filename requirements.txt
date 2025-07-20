@@ -1,6 +1,6 @@
 streamlit
 numpy
-matplotlib
-scikit-learn
-soundfile
+scipy
 librosa
+matplotlib
+soundfile
