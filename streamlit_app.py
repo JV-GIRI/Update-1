@@ -1,103 +1,58 @@
 import streamlit as st
 import numpy as np
+import scipy.io.wavfile as wav
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
+from io import BytesIO
 import soundfile as sf
-import os
-import json
-from datetime import datetime
 
-# Directory to save patient data
-os.makedirs("patients", exist_ok=True)
+st.set_page_config(page_title="PCG Realtime Waveform Analyzer", layout="wide")
+st.title("🔬 Real-time PCG Waveform & Noise Reduction")
 
-st.set_page_config(page_title="RVHD Detection - AI Assisted", layout="wide")
-st.title("🩺 AI-Based Rheumatic Valvular Heart Disease (RVHD) Detector")
+uploaded_file = st.file_uploader("📤 Upload a PCG (.wav) file", type=["wav"])
 
-# Tabs
-menu = st.sidebar.radio("Navigation", ["Upload & Analyze", "Case History"])
+if uploaded_file:
+    st.audio(uploaded_file, format='audio/wav')
 
-if menu == "Upload & Analyze":
-    st.header("📤 Upload Phonocardiogram (PCG) Audio")
+    # Load audio with librosa for more control
+    y, sr = librosa.load(uploaded_file, sr=None)
+    
+    # Show original waveform
+    st.subheader("🔈 Original PCG Waveform")
+    fig, ax = plt.subplots(figsize=(10, 3))
+    librosa.display.waveshow(y, sr=sr, ax=ax)
+    ax.set(title="Original PCG Waveform")
+    st.pyplot(fig)
 
-    with st.form("patient_form"):
-        name = st.text_input("Patient Name")
-        age = st.number_input("Age", 0, 120, 45)
-        gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-        file = st.file_uploader("Upload .wav file of heart sound", type=["wav"])
-        submit = st.form_submit_button("Analyze")
+    # --- Controls ---
+    st.subheader("🎚 Waveform Controls")
+    duration = st.slider("Select duration (seconds)", 1, int(len(y)/sr), 5)
+    amplitude_factor = st.slider("Amplitude scaling", 0.1, 5.0, 1.0)
 
-    if submit and file is not None:
-        y, sr = librosa.load(file, sr=4000)
-        duration = librosa.get_duration(y=y, sr=sr)
+    # Slice waveform and scale
+    y_trimmed = y[:sr * duration] * amplitude_factor
 
-        # --- Simulated AI Interpretation ---
-        heart_rate = int(60 / (duration / 6))  # crude est.
+    # --- Basic Denoising using simple bandpass filter ---
+    from scipy.signal import butter, filtfilt
+    def bandpass_filter(data, sr, lowcut=25.0, highcut=400.0):
+        nyquist = 0.5 * sr
+        low = lowcut / nyquist
+        high = highcut / nyquist
+        b, a = butter(2, [low, high], btype='band')
+        return filtfilt(b, a, data)
 
-        # Frequency analysis
-        freqs = np.abs(librosa.stft(y))
-        avg_power = freqs.mean()
+    y_denoised = bandpass_filter(y_trimmed, sr)
 
-        if heart_rate > 100:
-            condition = "Tachycardia detected"
-        elif heart_rate < 50:
-            condition = "Bradycardia detected"
-        else:
-            condition = "Heart rate normal"
+    # --- Plot Denoised Waveform ---
+    st.subheader("🔇 Denoised Waveform (Bandpass Filtered 25–400 Hz)")
+    fig2, ax2 = plt.subplots(figsize=(10, 3))
+    librosa.display.waveshow(y_denoised, sr=sr, ax=ax2, color='r')
+    ax2.set(title="Filtered PCG Signal")
+    st.pyplot(fig2)
 
-        if avg_power > 25:
-            rvhd_findings = "Possible Mitral Regurgitation (holosystolic murmur)"
-        elif avg_power < 10:
-            rvhd_findings = "Possible Mitral Stenosis (diastolic rumble)"
-        else:
-            rvhd_findings = "Normal or unclear pathology"
-
-        # --- Display Results ---
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🫀 Heart Sound Waveform")
-            fig, ax = plt.subplots()
-            librosa.display.waveshow(y, sr=sr, ax=ax)
-            ax.set_title("Phonocardiogram Waveform")
-            st.pyplot(fig)
-
-        with col2:
-            st.subheader("📄 AI Interpretation Report")
-            st.markdown(f"**Patient:** {name}\n")
-            st.markdown(f"**Age / Gender:** {age} / {gender}")
-            st.markdown(f"**Heart Rate:** {heart_rate} bpm")
-            st.markdown(f"**Condition:** {condition}")
-            st.markdown(f"**RVHD Suspicion:** {rvhd_findings}")
-
-        # Save case
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        patient_record = {
-            "name": name,
-            "age": age,
-            "gender": gender,
-            "heart_rate": heart_rate,
-            "condition": condition,
-            "rvhd_findings": rvhd_findings,
-            "timestamp": timestamp
-        }
-        with open(f"patients/{name}_{timestamp}.json", "w") as f:
-            json.dump(patient_record, f)
-
-        st.success("✅ Case saved and AI report generated.")
-
-elif menu == "Case History":
-    st.header("📁 Past Patient Cases")
-    files = sorted(os.listdir("patients"), reverse=True)
-
-    if not files:
-        st.info("No patient records available.")
-    else:
-        for file in files:
-            with open(f"patients/{file}") as f:
-                data = json.load(f)
-                with st.expander(f"🗂️ {data['name']} | {data['timestamp']}"):
-                    st.markdown(f"**Age / Gender:** {data['age']} / {data['gender']}")
-                    st.markdown(f"**Heart Rate:** {data['heart_rate']} bpm")
-                    st.markdown(f"**Condition:** {data['condition']}")
-                    st.markdown(f"**RVHD Suspicion:** {data['rvhd_findings']}")
-                    
+    # Save denoised to buffer and allow download or playback
+    st.subheader("▶️ Play Denoised Audio")
+    buf = BytesIO()
+    sf.write(buf, y_denoised, sr, format='WAV')
+    st.audio(buf.getvalue(), format='audio/wav')
