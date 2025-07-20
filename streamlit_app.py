@@ -1,95 +1,113 @@
 import streamlit as st
-import sounddevice as sd
 import numpy as np
-import scipy.io.wavfile as wav
+import soundfile as sf
+import noisereduce as nr
+from scipy.signal import butter, lfilter
 import io
+from fpdf import FPDF
+from pydub import AudioSegment
+import tempfile
+import matplotlib.pyplot as plt
 import datetime
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
-# Streamlit app config
-st.set_page_config(page_title="Infrasonic Heart Sound Recorder", layout="centered")
-st.title("🩺 AI-Powered Heart Sound Recorder")
-st.markdown("Record, Analyze, and Save Reports with AI Diagnosis")
+# --- App Title ---
+st.set_page_config(page_title="PCG AI Diagnosis App", layout="centered")
+st.markdown("<h1 style='text-align: center;'>💓 HEARTEST : AI assisted PCG analyzer</h1>", unsafe_allow_html=True)
 
-# Recording settings
-duration = st.slider("Select recording duration (seconds):", 2, 15, 5)
-fs = 44100  # Sampling frequency
+# --- 1. Patient Details ---
+st.sidebar.subheader("📋 Patient Details")
+patient_name = st.sidebar.text_input("Name")
+age = st.sidebar.number_input("Age", 1, 120)
+sex = st.sidebar.selectbox("Sex", ["Male", "Female"])
+patient_id = st.sidebar.text_input("Patient ID", value=f"PCG{np.random.randint(1000,9999)}")
 
-# Record audio on button click
-if st.button("🎙️ Start Recording"):
-    st.info("Recording...")
-    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float64')
+# --- 2. Record Audio ---
+st.markdown("### 🎙️ Record Heart Sound")
+duration = st.slider("Recording duration (seconds)", 3, 15, 5)
+record_btn = st.button("🔴 Record Now")
+
+# Temporary storage
+uploaded_file = None
+if record_btn:
+    st.info("Recording... Please wait.")
+    import sounddevice as sd
+
+    fs = 44100
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1)
     sd.wait()
-    st.success("Recording completed!")
 
-    # Convert to WAV
-    wav_io = io.BytesIO()
-    wav.write(wav_io, fs, (recording * 32767).astype(np.int16))
-    wav_data = wav_io.getvalue()
+    temp_audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+    sf.write(temp_audio_path, audio, fs)
+    uploaded_file = temp_audio_path
+    st.success("✅ Recorded Successfully!")
 
-    # Waveform and playback
-    st.subheader("📊 Waveform")
-    st.audio(wav_data, format='audio/wav')
-    st.line_chart(recording)
+# Or Upload
+st.markdown("### 📁 Or Upload Heart Sound")
+uploaded_file = st.file_uploader("Upload .wav file", type=["wav"])
 
-    # Noise reduction
-    filtered = recording - np.mean(recording)
+# --- 3. Plot Waveform ---
+def plot_waveform(data, sr, title="Waveform"):
+    fig, ax = plt.subplots()
+    ax.plot(np.linspace(0, len(data) / sr, len(data)), data)
+    ax.set_title(title)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Amplitude")
+    st.pyplot(fig)
 
-    # Feature Extraction
-    max_amp = np.max(np.abs(filtered))
-    duration_sec = recording.shape[0] / fs
+# --- 4. Bandpass Filter ---
+def butter_bandpass_filter(data, lowcut=20.0, highcut=1000.0, fs=44100, order=4):
+    nyq = 0.5 * fs
+    b, a = butter(order, [lowcut / nyq, highcut / nyq], btype='band')
+    y = lfilter(b, a, data)
+    return y
 
-    st.write(f"🔍 Duration: `{duration_sec:.2f} sec`")
-    st.write(f"📈 Max Amplitude: `{max_amp:.4f}`")
+# --- 5. Process File ---
+if uploaded_file:
+    st.markdown("### 🔎 Waveform & Playback")
+    data, sr = sf.read(uploaded_file)
+    data = data[:, 0] if len(data.shape) > 1 else data
+    plot_waveform(data, sr, "🔉 Original Waveform")
+    st.audio(uploaded_file, format="audio/wav", start_time=0)
 
-    # AI Diagnosis
-    if max_amp > 0.2:
-        diagnosis = "Abnormal heart sound detected. Possible murmur."
-    else:
-        diagnosis = "Normal heart sound pattern detected."
+    # Bandpass Filter + Noise Reduction
+    filtered = butter_bandpass_filter(data, 20, 1000, sr)
+    reduced_noise = nr.reduce_noise(y=filtered, sr=sr)
 
-    st.subheader("🧠 AI Diagnosis")
-    st.info(diagnosis)
+    # Show filtered waveform
+    plot_waveform(reduced_noise, sr, "🔇 After Noise Reduction")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+        sf.write(f.name, reduced_noise, sr)
+        st.audio(f.name, format="audio/wav")
 
-    # Prepare report
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report = f"""
-    🗓️ Recorded at: {now}
-    📌 Duration: {duration_sec:.2f} seconds
-    📌 Max Amplitude: {max_amp:.4f}
-    🤖 AI Diagnosis: {diagnosis}
-    """
+    # Heart Rate Estimation (Mock logic)
+    estimated_hr = np.random.randint(60, 100)
+    st.metric("💓 Estimated Heart Rate", f"{estimated_hr} bpm")
 
-    st.text_area("📝 Diagnosis Report", report.strip(), height=200)
+    # Simulate AI Diagnosis
+    st.markdown("### 🤖 AI Diagnosis")
+    ai_result = "Normal Heart Sounds Detected"
+    if estimated_hr > 90:
+        ai_result = "Possible Tachycardia Pattern Detected"
+    elif estimated_hr < 60:
+        ai_result = "Possible Bradycardia Pattern Detected"
+    st.success(ai_result)
 
-    # Download Report
-    st.download_button("⬇️ Download Report", report.strip(), file_name="Heart_Report.txt")
+    # --- 6. Generate Report ---
+    st.markdown("### 📄 Download Report")
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, "Heart Sound AI Report", ln=True, align="C")
 
-    # Save to Google Sheet
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds_dict = {
-            "type": "service_account",
-            "project_id": st.secrets["gspread"]["project_id"],
-            "private_key_id": st.secrets["gspread"]["private_key_id"],
-            "private_key": st.secrets["gspread"]["private_key"].replace("\\n", "\n"),
-            "client_email": st.secrets["gspread"]["client_email"],
-            "client_id": st.secrets["gspread"]["client_id"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": st.secrets["gspread"]["client_x509_cert_url"]
-        }
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(200, 10, f"Date: {datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')}", ln=True)
+    pdf.cell(200, 10, f"Patient Name: {patient_name}", ln=True)
+    pdf.cell(200, 10, f"Age: {age}", ln=True)
+    pdf.cell(200, 10, f"Sex: {sex}", ln=True)
+    pdf.cell(200, 10, f"Patient ID: {patient_id}", ln=True)
+    pdf.cell(200, 10, f"Estimated Heart Rate: {estimated_hr} bpm", ln=True)
+    pdf.multi_cell(0, 10, f"AI Interpretation:\n{ai_result}")
 
-        credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        gc = gspread.authorize(credentials)
-
-        # Google Sheet key from link
-        sheet_key = "1i8yt5bEct6WIB4R-gwjp0NsElDXUvFoDS8_GYcb5SW0"
-        sheet = gc.open_by_key(sheet_key).sheet1
-
-        sheet.append_row([now, f"{duration_sec:.2f}", f"{max_amp:.4f}", diagnosis])
-        st.success("✅ Report saved to Google Sheet successfully!")
-    except Exception as e:
-        st.error(f"❌ Failed to save to Google Sheet: {e}")
+    pdf_output = io.BytesIO()
+    pdf.output(pdf_output)
+    st.download_button("📥 Download Report PDF", data=pdf_output.getvalue(), file_name="Heart_Report.pdf", mime="application/pdf")
