@@ -1,119 +1,144 @@
 import streamlit as st
+import sounddevice as sd
 import numpy as np
-import soundfile as sf
+import scipy.signal
 import matplotlib.pyplot as plt
 import io
-import os
-from scipy.signal import butter, filtfilt
-from fpdf import FPDF
+import base64
+import wave
+from scipy.io import wavfile
 from pydub import AudioSegment
 from pydub.playback import play
 import tempfile
+from fpdf import FPDF
 
-st.set_page_config(layout="wide")
-st.title("Heart Sound Case Analyzer")
+# Set Page Config
+st.set_page_config(
+    page_title="Heartbeat AI Analyzer",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
 
-# 1. Record or Upload Audio
-st.header("🎙️ Step 1: Record or Upload Heart Sound")
-audio_data = None
+# Custom CSS for styling
+st.markdown("""
+    <style>
+        html, body, [class*="css"]  {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #f8f9fa;
+        }
+        .main {
+            background-color: #ffffff;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+        }
+        .stButton>button {
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 0.5em 1em;
+            font-weight: 600;
+        }
+        .stTextInput>div>div>input {
+            padding: 0.75em;
+            border-radius: 10px;
+            border: 1px solid #ccc;
+        }
+        hr {
+            border: 1px solid #dee2e6;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-recorded = st.file_uploader("Upload heart sound (.wav)", type=["wav"])
-if recorded:
-    audio_data, samplerate = sf.read(recorded)
-    st.success("Audio uploaded successfully!")
+st.title("🩺 Heart Sound Recorder & Analyzer")
 
-# 2. Filter settings
-st.header("🎚️ Step 2: Apply Filters and Adjustments")
+with st.container():
+    st.subheader("🧑‍⚕️ Patient Details")
+    name = st.text_input("Patient Name")
+    age = st.number_input("Age", min_value=1, max_value=120, step=1)
+    case_id = st.text_input("Case ID")
+    st.markdown("---")
 
-lowcut = st.slider("Low Cut Frequency (Hz)", 10, 100, 20)
-highcut = st.slider("High Cut Frequency (Hz)", 150, 1000, 150)
-amp_factor = st.slider("Amplitude Multiplier", 1.0, 5.0, 1.5)
-duration = st.slider("Clip Duration (sec)", 1, 10, 5)
+# RECORDING
+st.subheader("🎙️ Record Heart Sound")
+duration = st.slider("Recording Duration (seconds)", 2, 10, 5)
+record_button = st.button("🔴 Start Recording")
 
-# 3. Bandpass Filter
-def butter_bandpass(lowcut, highcut, fs, order=5):
-    nyq = 0.5 * fs
-    low, high = lowcut / nyq, highcut / nyq
-    b, a = butter(order, [low, high], btype="band")
-    return b, a
+if record_button:
+    st.info("Recording...")
+    fs = 44100
+    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+    sd.wait()
+    st.success("Recording Complete")
 
-def apply_bandpass_filter(data, lowcut, highcut, fs):
-    b, a = butter_bandpass(lowcut, highcut, fs)
-    y = filtfilt(b, a, data)
-    return y
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    wavfile.write(temp_file.name, fs, recording)
 
-if audio_data is not None:
-    st.subheader("📊 Waveform Visualization")
+    audio_bytes = open(temp_file.name, "rb").read()
+    st.audio(audio_bytes, format="audio/wav")
 
-    # Show waveform
+    st.markdown("#### 🔍 Original Waveform")
     fig, ax = plt.subplots()
-    t = np.linspace(0, duration, int(duration * samplerate))
-    ax.plot(t[:len(audio_data)], audio_data[:len(t)])
-    ax.set_title("Original Audio Waveform")
+    time_axis = np.linspace(0, duration, len(recording))
+    ax.plot(time_axis, recording, color="#2c3e50")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Amplitude")
     st.pyplot(fig)
 
-    # Filtered and amplified signal
-    filtered_audio = apply_bandpass_filter(audio_data, lowcut, highcut, samplerate)
-    filtered_audio *= amp_factor
+    # Noise Reduction
+    st.subheader("🔧 Noise Reduction")
+    lowcut = st.slider("Low Cut Frequency", 10, 100, 30)
+    highcut = st.slider("High Cut Frequency", 100, 800, 150)
 
-    # Buttons to play audio
-    st.subheader("🔊 Listen to Heart Sound")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("▶️ Play Original"):
-            temp_path = tempfile.mktemp(suffix=".wav")
-            sf.write(temp_path, audio_data, samplerate)
-            audio = AudioSegment.from_wav(temp_path)
-            play(audio)
-    with col2:
-        if st.button("▶️ Play After Noise Reduction"):
-            temp_path = tempfile.mktemp(suffix=".wav")
-            sf.write(temp_path, filtered_audio, samplerate)
-            audio = AudioSegment.from_wav(temp_path)
-            play(audio)
+    def butter_bandpass(lowcut, highcut, fs, order=6):
+        nyq = 0.5 * fs
+        low = lowcut / nyq
+        high = highcut / nyq
+        return scipy.signal.butter(order, [low, high], btype='band')
 
-# 4. Patient Details
-st.header("🧑‍⚕️ Step 3: Enter Patient Details")
-with st.form("patient_form"):
-    pname = st.text_input("Patient Name")
-    age = st.number_input("Age", min_value=1, max_value=120)
-    gender = st.radio("Gender", ["Male", "Female", "Other"])
-    symptoms = st.text_area("Symptoms")
-    submit = st.form_submit_button("Start Case")
+    def apply_filter(data, lowcut, highcut, fs):
+        b, a = butter_bandpass(lowcut, highcut, fs)
+        return scipy.signal.lfilter(b, a, data.flatten())
 
-# 5. Analysis Button and Save Case
-if submit and audio_data is not None:
-    st.success("Patient details saved.")
-    st.header("📁 Step 4: Save and Export Case")
+    filtered = apply_filter(recording, lowcut, highcut, fs).reshape(-1, 1)
 
-    if st.button("🧪 Analyse & Save Case"):
-        case_data = {
-            "Name": pname,
-            "Age": age,
-            "Gender": gender,
-            "Symptoms": symptoms
-        }
+    st.markdown("#### 🎵 Filtered Waveform")
+    fig2, ax2 = plt.subplots()
+    ax2.plot(time_axis, filtered, color="#27ae60")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Amplitude")
+    st.pyplot(fig2)
 
-        # Save filtered audio
-        filtered_path = f"{pname.replace(' ', '_')}_filtered.wav"
-        sf.write(filtered_path, filtered_audio, samplerate)
+    # Save filtered sound
+    temp_clean = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    wavfile.write(temp_clean.name, fs, filtered.astype(np.float32))
 
-        # PDF report
+    # Play cleaned sound
+    st.audio(temp_clean.name, format="audio/wav")
+
+    # PDF Report
+    st.subheader("📄 Generate Report")
+    if st.button("Generate PDF"):
         pdf = FPDF()
         pdf.add_page()
+        pdf.set_font("Arial", size=14)
+        pdf.cell(200, 10, txt="Heartbeat Sound Analysis Report", ln=True, align='C')
+        pdf.ln(10)
         pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt="Heart Sound Report", ln=True, align="C")
-        for key, value in case_data.items():
-            pdf.cell(200, 10, txt=f"{key}: {value}", ln=True)
-        pdf.output("case_report.pdf")
+        pdf.cell(200, 10, txt=f"Patient Name: {name}", ln=True)
+        pdf.cell(200, 10, txt=f"Age: {age}", ln=True)
+        pdf.cell(200, 10, txt=f"Case ID: {case_id}", ln=True)
+        pdf.cell(200, 10, txt=f"Recording Duration: {duration} sec", ln=True)
+        pdf.cell(200, 10, txt=f"Bandpass Range: {lowcut}Hz - {highcut}Hz", ln=True)
 
-        st.success("Case analyzed and saved!")
-        with open("case_report.pdf", "rb") as f:
-            st.download_button("📄 Download Report", f, file_name="Heart_Report.pdf")
+        # Save PDF
+        pdf_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        pdf.output(pdf_file.name)
 
-        with open(filtered_path, "rb") as f:
-            st.download_button("🎧 Download Filtered Audio", f, file_name="Filtered_Audio.wav")
+        with open(pdf_file.name, "rb") as f:
+            st.download_button("📥 Download PDF Report", f, file_name="heartbeat_report.pdf")
 
-        st.info("Case saved to local cloud (simulation).")
+    # Cloud Save Placeholder
+    st.subheader("☁️ Save to Cloud (Coming Soon)")
+    st.info("Cloud save functionality will integrate Firebase/Supabase on your request.")
