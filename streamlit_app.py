@@ -104,3 +104,49 @@ else:
             st.markdown(f"**Gender:** {case['gender']}")
             st.markdown(f"**Diagnosis:** {case['diagnosis']}")
     
+# =========================
+# ✅ Additional Real-Time Controls and Noise Reduction
+# =========================
+
+st.subheader("⚙️ Real-time Adjustment & Noise Reduction")
+
+# Expandable container for real-time controls
+with st.expander("🛠️ Real-time Waveform Adjustment & Noise Filter", expanded=True):
+
+    # Duration & amplitude slider
+    rt_duration = st.slider("Adjust Duration (seconds)", 1, min(int(len(y)/sr), 30), 5, key="rt_dur")
+    rt_amp = st.slider("Adjust Amplitude", 0.1, 5.0, 1.0, key="rt_amp")
+
+    y_rt = y[:sr * rt_duration] * rt_amp
+
+    # Plot updated waveform before noise reduction
+    st.markdown("📉 **Adjusted Waveform Before Noise Reduction**")
+    fig_rt1, ax_rt1 = plt.subplots(figsize=(10, 3))
+    librosa.display.waveshow(y_rt, sr=sr, ax=ax_rt1)
+    ax_rt1.set(title="Adjusted PCG Waveform")
+    st.pyplot(fig_rt1)
+
+    # Noise reduction button
+    if st.button("🔧 Reduce Noise", key="reduce_noise_btn"):
+
+        def bandpass_filter(data, sr, lowcut=25.0, highcut=400.0):
+            nyquist = 0.5 * sr
+            low = lowcut / nyquist
+            high = highcut / nyquist
+            b, a = butter(2, [low, high], btype='band')
+            return filtfilt(b, a, data)
+
+        y_filtered_rt = bandpass_filter(y_rt, sr)
+
+        # Plot denoised waveform
+        st.markdown("🔇 **Denoised Waveform**")
+        fig_rt2, ax_rt2 = plt.subplots(figsize=(10, 3))
+        librosa.display.waveshow(y_filtered_rt, sr=sr, ax=ax_rt2, color='red')
+        ax_rt2.set(title="Denoised PCG Waveform (Real-Time)")
+        st.pyplot(fig_rt2)
+
+        # Denoised audio
+        st.markdown("▶️ **Play Denoised Audio**")
+        rt_buf = BytesIO()
+        sf.write(rt_buf, y_filtered_rt, sr, format='WAV')
+        st.audio(rt_buf.getvalue(), format='audio/wav')
