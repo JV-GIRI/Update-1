@@ -1,9 +1,9 @@
 streamlit
 numpy
-matplotlib
-librosa
+scipy
 soundfile
 sounddevice
-reportlab
-pydub
-scipy
+matplotlib
+plotly
+fpdf
+pandas
