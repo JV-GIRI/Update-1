@@ -1,0 +1,8 @@
+streamlit
+matplotlib
+numpy
+scipy
+librosa
+soundfile
+fpdf
+noisereduce
