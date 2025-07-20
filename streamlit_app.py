@@ -1,95 +1,96 @@
 import streamlit as st
 import numpy as np
-import soundfile as sf
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
+import sounddevice as sd
+import soundfile as sf
 import io
-import tempfile
-from scipy.signal import butter, lfilter
+from pydub import AudioSegment
 from reportlab.pdfgen import canvas
-from datetime import datetime
-import os
+from scipy.signal import butter, lfilter
 
-# ------------------ Helper Functions ------------------ #
-def butter_lowpass_filter(data, cutoff, fs, order=5):
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    y = lfilter(b, a, data)
-    return y
+# Function to apply noise reduction using a simple high-pass filter
+def reduce_noise(y, sr):
+    b, a = butter(6, 100 / (0.5 * sr), btype='high')
+    filtered = lfilter(b, a, y)
+    return filtered
 
-def generate_waveform_plot(y, sr, title):
-    fig, ax = plt.subplots()
-    librosa.display.waveshow(y, sr=sr, ax=ax)
-    ax.set(title=title)
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-def save_pdf_report(patient_name, findings, waveform_img_buf):
+# Function to create PDF report
+def create_pdf(patient_name, case_notes):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer)
-    c.drawString(100, 800, f"Patient Name: {patient_name}")
-    c.drawString(100, 780, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    c.drawString(100, 760, f"Findings: {findings}")
-    c.drawImage(waveform_img_buf, 100, 500, width=400, height=200)
+    c.setFont("Helvetica", 12)
+    c.drawString(100, 800, f"Heart Sound Analysis Report")
+    c.drawString(100, 780, f"Patient Name: {patient_name}")
+    c.drawString(100, 760, f"Case Notes: {case_notes}")
     c.save()
     buffer.seek(0)
     return buffer
 
-# ------------------ Streamlit UI ------------------ #
-st.set_page_config(layout="wide")
-st.title("Live Heartbeat Analysis & Case Recorder")
+# Function to record audio
+def record_audio(duration=5, fs=22050):
+    st.info(f"Recording for {duration} seconds...")
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+    sd.wait()
+    sf.write("recorded.wav", audio, fs)
+    return "recorded.wav"
 
-st.sidebar.header("Patient Details")
-patient_name = st.sidebar.text_input("Name")
-patient_age = st.sidebar.number_input("Age", min_value=0, max_value=120)
-patient_gender = st.sidebar.selectbox("Gender", ["Male", "Female", "Other"])
-st.sidebar.markdown("---")
+# Streamlit UI
+st.set_page_config(layout="centered")
+st.title("🩺 Heart Sound Analyzer")
 
-uploaded_file = st.sidebar.file_uploader("Upload Heart Sound (.wav)", type=["wav"])
+# Patient Details Section
+with st.expander("👤 Add Patient Details"):
+    patient_name = st.text_input("Patient Name")
+    age = st.number_input("Age", 1, 120)
+    notes = st.text_area("Case Notes")
 
+# Record Heart Sound
+if st.button("🎙️ Record Heart Sound"):
+    filename = record_audio()
+    st.success("Recording complete!")
+
+# Upload audio
+uploaded_file = st.file_uploader("Upload Heart Sound (.wav)", type=["wav"])
 if uploaded_file is not None:
-    st.audio(uploaded_file, format='audio/wav', start_time=0)
     y, sr = librosa.load(uploaded_file, sr=None)
+    st.audio(uploaded_file, format="audio/wav")
+    st.success("Original heart sound loaded.")
 
-    st.subheader("Original Waveform")
-    original_plot = generate_waveform_plot(y, sr, "Original Heartbeat")
-    st.image(original_plot)
+    # Adjust duration and amplitude
+    duration_factor = st.slider("Adjust Playback Speed (Duration)", 0.5, 2.0, 1.0)
+    amplitude_factor = st.slider("Adjust Amplitude", 0.5, 2.0, 1.0)
 
-    duration = st.slider("Adjust Duration (seconds)", 1.0, float(len(y) / sr), float(len(y) / sr))
-    amp_scale = st.slider("Adjust Amplitude", 0.1, 5.0, 1.0)
-    y = y[:int(sr * duration)] * amp_scale
+    y = librosa.effects.time_stretch(y, rate=1/duration_factor)
+    y = y * amplitude_factor
 
-    if st.button("Apply Noise Reduction"):
-        y_filtered = butter_lowpass_filter(y, cutoff=200.0, fs=sr)
-        st.subheader("Filtered Waveform")
-        filtered_plot = generate_waveform_plot(y_filtered, sr, "Filtered Heartbeat")
-        st.image(filtered_plot)
-        st.audio(y_filtered, format='audio/wav')
+    # Show waveform
+    st.subheader("📈 Waveform")
+    fig, ax = plt.subplots()
+    librosa.display.waveshow(y, sr=sr, ax=ax)
+    st.pyplot(fig)
 
-        filtered_wav = tempfile.NamedTemporaryFile(delete=False, suffix="_filtered.wav")
-        sf.write(filtered_wav.name, y_filtered, sr)
-        st.download_button("Download Filtered Sound", data=open(filtered_wav.name, "rb").read(), file_name="filtered_heartbeat.wav")
+    # Play adjusted sound
+    st.subheader("🎧 Play Adjusted Heart Sound")
+    wav_io = io.BytesIO()
+    sf.write(wav_io, y, sr, format='wav')
+    st.audio(wav_io, format='audio/wav')
 
-    if st.button("Analyse & Generate Report"):
-        waveform_img_buf = generate_waveform_plot(y, sr, "Analysed Heartbeat")
-        findings = "Normal heart sound" if max(y) < 0.5 else "Abnormal/murmur detected"
-        pdf = save_pdf_report(patient_name, findings, waveform_img_buf)
-        st.download_button("Download PDF Report", data=pdf, file_name=f"{patient_name}_heartbeat_report.pdf")
+    # Noise reduction
+    if st.button("🧹 Apply Noise Reduction"):
+        reduced_y = reduce_noise(y, sr)
+        st.subheader("🔊 After Noise Reduction")
+        reduced_io = io.BytesIO()
+        sf.write(reduced_io, reduced_y, sr, format='wav')
+        st.audio(reduced_io, format='audio/wav')
+        st.success("Noise reduction applied.")
 
-    if st.button("Save Case to Cloud (Local Placeholder)"):
-        case_dir = f"saved_cases/{patient_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        os.makedirs(case_dir, exist_ok=True)
-        with open(f"{case_dir}/details.txt", "w") as f:
-            f.write(f"Name: {patient_name}\nAge: {patient_age}\nGender: {patient_gender}\n")
-        sf.write(f"{case_dir}/original.wav", y, sr)
-        st.success("Case saved locally. Cloud integration coming soon!")
-
-else:
-    st.info("Upload a .wav file to begin analysis.")
-
-# Optional: Add audio recording via browser (future integration using media stream capture)
+        # Save analyzed case
+        if st.button("💾 Save Case & Generate PDF"):
+            if patient_name:
+                pdf = create_pdf(patient_name, notes)
+                st.download_button("📥 Download PDF Report", pdf, file_name="Heart_Report.pdf")
+                st.success("Case saved successfully!")
+            else:
+                st.error("Please enter patient name.")
